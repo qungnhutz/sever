@@ -1,104 +1,149 @@
 ﻿const LocationCategory = require('../Model/ModelLocationCategory');
 const ModelBook = require('../Model/ModelBook');
-const QRCode = require('qrcode'); //npm install qrcode
+const QRCode = require('qrcode');
 const ModelBookGenre = require('../Model/ModelBookGenre');
 const fs = require('fs');
 const path = require('path');
-
-// 🛠 Định nghĩa thư mục lưu QR code bên ngoài class
-const qrFolderPath = path.join(__dirname, '../qr_output');
-
-// Kiểm tra nếu thư mục chưa tồn tại thì tạo mới
-if (!fs.existsSync(qrFolderPath)) {
-    fs.mkdirSync(qrFolderPath, { recursive: true });
-}
+const os = require('os');
 
 class ControllerLocationCategory {
 
+    constructor() {
+        this.localIPv4 = this.getLocalIPv4();
+    }
 
-async  generateQRCodePerShelf(req, res) {
-    try {
-        const dataBooks = await ModelBook.find({});
-        const bookGenres = await ModelBookGenre.find({});
-        const locationCategories = await LocationCategory.find({});
-
-        const genreMap = bookGenres.reduce((map, genre) => {
-            map[genre.madanhmuc] = genre.tendanhmuc;
-            return map;
-        }, {});
-
-        const locationMap = {};
-        locationCategories.forEach(loc => {
-            locationMap[loc.mavitri] = { coso: loc.coso, soke: loc.soke };
-        });
-
-        const shelfMap = {}; // Nhóm theo coso + soke
-
-        for (const book of dataBooks) {
-            for (const v of book.vitri) {
-                const location = locationMap[v.mavitri];
-                if (!location) continue;
-
-                const key = `${location.coso}_${location.soke}`;
-                if (!shelfMap[key]) {
-                    shelfMap[key] = {
-                        coso: location.coso,
-                        soke: location.soke,
-                        books: []
-                    };
+    getLocalIPv4() {
+        const interfaces = os.networkInterfaces();
+        for (const interfaceName in interfaces) {
+            for (const iface of interfaces[interfaceName]) {
+                if (iface.family === 'IPv4' && !iface.internal) {
+                    return iface.address;
                 }
-
-                shelfMap[key].books.push({
-                    masach: book.masach,
-                    tensach: book.tensach,
-                    tacgia: book.tacgia,
-                    tendanhmuc: genreMap[book.madanhmuc] || "Không xác định",
-                    soluong: v.soluong,
-                    soluongmuon: v.soluongmuon,
-                    soluong_con: v.soluong - v.soluongmuon,
-                    mavitri: v.mavitri
-                });
             }
         }
-
-        // 🔻 Tạo mã QR cho từng cặp coso + soke
-        const qrResults = [];
-
-        for (const key in shelfMap) {
-            const shelfData = shelfMap[key];
-
-            // Tạo QR từ dữ liệu JSON
-            const qrText = JSON.stringify({
-                coso: shelfData.coso,
-                soke: shelfData.soke,
-                books: shelfData.books
-            });
-
-            const qrImage = await QRCode.toDataURL(qrText);
-            qrResults.push({
-                coso: shelfData.coso,
-                soke: shelfData.soke,
-                qrCode: qrImage,
-                totalBooks: shelfData.books.length
-            });
-
-            // 🛠 Ghi file QR code vào thư mục qr_output
-            const fileName = `qr_${shelfData.coso}_${shelfData.soke}.png`;
-            const filePath = path.join(qrFolderPath, fileName);
-
-            await QRCode.toFile(filePath, qrText);
-        }
-
-        return res.status(200).json({
-            message: "Tạo mã QR theo từng kệ thành công!",
-            data: qrResults
-        });
-
-    } catch (error) {
-        console.error("Lỗi khi tạo mã QR:", error);
-        return res.status(500).json({ message: "Lỗi máy chủ!" });
+        return "127.0.0.1";
     }
-}
+
+    async generateQRCodePerShelf(req, res) {
+        try {
+            const localIPv4 = this.getLocalIPv4();
+
+            // Lấy danh sách vị trí nhưng chỉ quan tâm tới cơ sở và số kệ
+            const locationCategories = await LocationCategory.find({}, 'coso soke mavitri').catch(err => {
+                throw new Error(`Lỗi khi truy vấn LocationCategory: ${err.message}`);
+            });
+
+            if (!locationCategories || locationCategories.length === 0) {
+                return res.status(404).json({ error: "Không tìm thấy vị trí nào!" });
+            }
+
+            // Nhóm vị trí theo cơ sở và số kệ
+            const locationGroups = {};
+            locationCategories.forEach(loc => {
+                if (!loc.coso || !loc.soke) return; // Bỏ qua nếu dữ liệu không hợp lệ
+                const key = `${loc.coso}_${loc.soke}`;
+                if (!locationGroups[key]) {
+                    locationGroups[key] = {
+                        coso: loc.coso,
+                        soke: loc.soke
+                    };
+                }
+            });
+
+            const qrResults = [];
+            for (const key in locationGroups) {
+                const { coso, soke } = locationGroups[key];
+
+                // Tạo URL với query params chỉ chứa cơ sở và số kệ
+                const qrURL = `http://${localIPv4}:3000/getBookshelf?coso=${encodeURIComponent(coso)}&soke=${encodeURIComponent(soke)}`;
+
+                // Tạo QR code dưới dạng Base64
+                const qrBase64 = await QRCode.toDataURL(qrURL, { width: 300 }).catch(err => {
+                    throw new Error(`Lỗi khi tạo QR code cho ${coso}_${soke}: ${err.message}`);
+                });
+
+                qrResults.push({
+                    coso,
+                    soke,
+                    qrCodeBase64: qrBase64,
+                    link: qrURL
+                });
+            }
+
+            if (qrResults.length === 0) {
+                return res.status(404).json({ error: "Không có dữ liệu để tạo QR!" });
+            }
+
+            return res.json({
+                serverIPv4: localIPv4,
+                qrData: qrResults
+            });
+
+        } catch (error) {
+            console.error("Lỗi khi tạo mã QR:", error);
+            return res.status(500).json({ error: error.message || "Lỗi máy chủ!" });
+        }
+    }
+
+
+    async getBookshelf(req, res) {
+        try {
+            const { coso, soke } = req.query;
+
+            if (!coso || !soke) {
+                return res.status(400).json({ error: "Vui lòng cung cấp cơ sở và số kệ!" });
+            }
+
+            // Lọc vị trí theo cơ sở và số kệ
+            const locations = await LocationCategory.find({ coso, soke }).lean();
+            if (!locations.length) {
+                return res.status(404).json({ error: `Không tìm thấy kệ sách tại Cơ sở: ${coso}, Số kệ: ${soke}` });
+            }
+
+            const mavitriList = locations.map(loc => loc.mavitri);
+
+            // Tìm sách theo danh sách mã vị trí
+            const books = await ModelBook.find({ "vitri.mavitri": { $in: mavitriList } }).lean();
+
+            // Tạo danh sách sách theo vị trí
+            const formattedBooks = [];
+            books.forEach(book => {
+                book.vitri.forEach(v => {
+                    if (mavitriList.includes(v.mavitri)) {
+                        formattedBooks.push({
+                            masach: book.masach || "Không xác định",
+                            tensach: book.tensach || "Không xác định",
+                            tacgia: book.tacgia || "Không xác định",
+                            img: book.img || "",
+                            mota: book.mota || "Không có mô tả",
+                            price: book.price || 0,
+                            nhaxuatban: book.nhaxuatban || "Không xác định",
+                            phienban: book.phienban || "Không xác định",
+                            namxb: book.namxb || "Không xác định",
+                            pages: book.pages || 0,
+                            mavitri: v.mavitri,
+                            soluong: v.soluong || 0,
+                            soluongmuon: v.soluongmuon || 0,
+                            soluong_con: Math.max((v.soluong || 0) - (v.soluongmuon || 0), 0)
+                        });
+                    }
+                });
+            });
+
+            return res.json({
+                coso,
+                soke,
+                books: formattedBooks
+            });
+
+        } catch (error) {
+            console.error("Lỗi khi lấy thông tin sách:", error);
+            return res.status(500).json({ error: "Lỗi máy chủ!" });
+        }
+    }
+
+
+
     // Lấy tất cả vị trí
     async getAllLocations(req, res) {
         try {

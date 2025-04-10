@@ -28,6 +28,7 @@ function route(app) {
     app.post('/api/addLocation', LocationCategoryRouter);
     app.get('/api/getAllLocations', LocationCategoryRouter);
     app.get('/api/generateQRCodePerShelf', LocationCategoryRouter);
+    app.get('/api/getBookshelf', LocationCategoryRouter);
     // Buy
     app.get('/api/suggestBooksToBuy', BuyBookRouter);
     app.get('/api/getAllBuyBooks', BuyBookRouter);

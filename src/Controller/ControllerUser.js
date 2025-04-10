@@ -7,21 +7,15 @@ const jwt = require('jsonwebtoken');
 class UserController {
     async getStudentFromToken(req, res) {
         try {
-            // Lấy token từ header
             const token = req.cookies?.Token || req.headers.authorization?.split(' ')[1];
-
             if (!token) {
                 return res.status(401).json({ message: 'Không có token !!!' });
             }
-
-            // Giải mã token
             const decoded = jwt.verify(token, process.env.JWT_SECRET);
             const student = await ModelReader.findOne({ masinhvien: decoded.masinhvien });
-
             if (!student) {
                 return res.status(404).json({ message: 'Không tìm thấy sinh viên !!!' });
             }
-
             return res.status(200).json(student);
         } catch (error) {
             console.error('Lỗi khi lấy sinh viên từ token:', error);
@@ -29,11 +23,9 @@ class UserController {
         }
     }
 
-    // Đăng nhập
     async login(req, res) {
         try {
             const { masinhvien, password } = req.body;
-
             if (!masinhvien || !password) {
                 return res.status(400).json({ message: 'Vui lòng nhập đầy đủ thông tin!' });
             }
@@ -52,11 +44,17 @@ class UserController {
                     id: user._id
                 },
                 process.env.JWT_SECRET,
-                { expiresIn: process.env.EXPIRES_IN }
+                { expiresIn: process.env.EXPIRES_IN || '1h' }
             );
 
-            // Lưu token vào cookie
-            res.setHeader('Set-Cookie', `Token=${token}; Max-Age=3600; Path=/; HttpOnly; Secure`);
+            // Lưu token vào cookie với cấu hình phù hợp
+            res.cookie('Token', token, {
+                httpOnly: true,
+                secure: false, // Đặt thành true nếu dùng HTTPS, false để test trên HTTP
+                maxAge: 3600 * 1000, // 1 giờ
+                path: '/',
+                sameSite: 'Lax' // Hoặc 'None' nếu cần gửi cross-origin (kèm secure: true)
+            });
 
             return res.status(200).json({
                 message: 'Đăng Nhập Thành Công !!!',
@@ -68,11 +66,10 @@ class UserController {
             return res.status(500).json({ message: 'Lỗi máy chủ !!!' });
         }
     }
-    // Đăng xuất
+
     logout(req, res) {
         res.clearCookie('Token').status(200).json({ message: 'Đăng xuất thành công!' });
     }
-
     // Đổi mật khẩu
     async changePassword(req, res) {
         try {

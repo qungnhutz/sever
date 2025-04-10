@@ -7,82 +7,94 @@ const jwt = require('jsonwebtoken');
 const diacritics = require('diacritics');
 
 class ControllerHandleBook {
-   async  SearchBorrows(req, res) {
-    try {
-        const { masinhvien, tensach } = req.query;
-        let query = {};
+    async  SearchBorrows(req, res) {
+        try {
+            const { masinhvien, tensach } = req.query;
+            let query = {};
 
-        // 🔹 Nếu có `masinhvien`, thêm điều kiện tìm kiếm
-        if (masinhvien) {
-            query.masinhvien = { $regex: masinhvien.trim(), $options: "i" };
-        }
-
-        // 🔹 Nếu có `tensach`, tìm sách gần đúng
-        if (tensach) {
-            const normalizedSearch = diacritics.remove(tensach.trim()).toLowerCase(); // Chuyển về không dấu
-
-            const books = await ModelBook.find();
-            const matchedBooks = books.filter(book =>
-                diacritics.remove(book.tensach).toLowerCase().includes(normalizedSearch)
-            );
-
-            if (!matchedBooks.length) {
-                return res.status(404).json({ message: 'Không tìm thấy sách phù hợp !!!' });
+            // 🔹 Nếu có `masinhvien`, thêm điều kiện tìm kiếm
+            if (masinhvien) {
+                query.masinhvien = { $regex: masinhvien.trim(), $options: "i" };
             }
 
-            const bookIds = matchedBooks.map(book => book.masach);
-            query.masach = { $in: bookIds };
+            // 🔹 Nếu có `tensach`, tìm sách gần đúng
+            if (tensach) {
+                const normalizedSearch = diacritics.remove(tensach.trim()).toLowerCase(); // Chuyển về không dấu
+
+                const books = await ModelBook.find();
+                const matchedBooks = books.filter(book =>
+                    diacritics.remove(book.tensach).toLowerCase().includes(normalizedSearch)
+                );
+
+                if (!matchedBooks.length) {
+                    return res.status(404).json({ message: 'Không tìm thấy sách phù hợp !!!' });
+                }
+
+                const bookIds = matchedBooks.map(book => book.masach);
+                query.masach = { $in: bookIds };
+            }
+
+            // 🔹 Truy vấn phiếu mượn theo điều kiện
+            const borrowRecords = await ModelHandleBook.find(query);
+            if (!borrowRecords.length) {
+                return res.status(404).json({ message: 'Không tìm thấy phiếu mượn nào !!!' });
+            }
+
+            // 🔹 Lấy thông tin sách
+            const bookIds = borrowRecords.map(borrow => borrow.masach);
+            const books = await ModelBook.find({ masach: { $in: bookIds } });
+
+            // 🔹 Tạo danh sách kết quả
+            const borrowList = borrowRecords.map(borrow => {
+                const book = books.find(b => b.masach === borrow.masach);
+                return {
+                    maphieumuon: borrow.maphieumuon,
+                    masinhvien: borrow.masinhvien,
+                    masach: borrow.masach,
+                    tensach: book ? book.tensach : 'Không tìm thấy',
+                    ngaymuon: borrow.ngaymuon,
+                    ngayhentra: borrow.ngayhentra,
+                    ngaytra: borrow.ngaytra,
+                    trangthai: borrow.trangthai,
+                    giahan: borrow.giahan,
+                };
+            });
+
+            return res.status(200).json({ message: 'Danh sách phiếu mượn', data: borrowList });
+        } catch (error) {
+            console.error("Lỗi khi tìm phiếu mượn:", error);
+            return res.status(500).json({ message: 'Lỗi máy chủ !!!' });
         }
-
-        // 🔹 Truy vấn phiếu mượn theo điều kiện
-        const borrowRecords = await ModelHandleBook.find(query);
-        if (!borrowRecords.length) {
-            return res.status(404).json({ message: 'Không tìm thấy phiếu mượn nào !!!' });
-        }
-
-        // 🔹 Lấy thông tin sách
-        const bookIds = borrowRecords.map(borrow => borrow.masach);
-        const books = await ModelBook.find({ masach: { $in: bookIds } });
-
-        // 🔹 Tạo danh sách kết quả
-        const borrowList = borrowRecords.map(borrow => {
-            const book = books.find(b => b.masach === borrow.masach);
-            return {
-                maphieumuon: borrow.maphieumuon,
-                masinhvien: borrow.masinhvien,
-                masach: borrow.masach,
-                tensach: book ? book.tensach : 'Không tìm thấy',
-                ngaymuon: borrow.ngaymuon,
-                ngayhentra: borrow.ngayhentra,
-                ngaytra: borrow.ngaytra,
-                trangthai: borrow.trangthai,
-                giahan: borrow.giahan,
-            };
-        });
-
-        return res.status(200).json({ message: 'Danh sách phiếu mượn', data: borrowList });
-    } catch (error) {
-        console.error("Lỗi khi tìm phiếu mượn:", error);
-        return res.status(500).json({ message: 'Lỗi máy chủ !!!' });
     }
-}
 
     async GetBorrowsByStudent(req, res) {
         try {
-            const token = req.cookies.Token;
+            // Lấy token từ cookie hoặc header
+            const token = req.cookies?.Token || req.headers.authorization?.split(' ')[1];
             if (!token) {
-                return res.status(401).json({ message: 'Không có token !!!' });
+                return res.status(401).json({ message: 'Không có token, vui lòng đăng nhập lại!' });
             }
 
-            // 🔹 Giải mã token lấy `masinhvien`
-            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            // Kiểm tra JWT_SECRET
+            if (!process.env.JWT_SECRET) {
+                return res.status(500).json({ message: 'Lỗi cấu hình server, thiếu JWT_SECRET!' });
+            }
+
+            // Giải mã token
+            let decoded;
+            try {
+                decoded = jwt.verify(token, process.env.JWT_SECRET);
+            } catch (err) {
+                return res.status(401).json({ message: 'Token không hợp lệ hoặc đã hết hạn!' });
+            }
+
             const masinhvien = decoded.masinhvien;
             const today = moment().startOf('day');
 
-            // 🔹 Truy vấn tất cả phiếu mượn theo `masinhvien`
+            // Truy vấn tất cả phiếu mượn theo masinhvien
             const borrowRecords = await ModelHandleBook.find({ masinhvien });
             if (!borrowRecords.length) {
-                return res.status(404).json({ message: 'Không tìm thấy phiếu mượn nào !!!' });
+                return res.status(404).json({ message: 'Không tìm thấy phiếu mượn nào!' });
             }
 
             const bookIds = borrowRecords.map(borrow => borrow.masach);
@@ -92,7 +104,7 @@ class ControllerHandleBook {
                 const book = books.find(b => b.masach === borrow.masach);
                 const ngayHentra = moment(borrow.ngayhentra, 'YYYY-MM-DD');
 
-                let quahan = 0; // Tính số ngày quá hạn
+                let quahan = 0;
                 if (ngayHentra.isValid() && ngayHentra.isBefore(today)) {
                     quahan = today.diff(ngayHentra, 'days');
                 }
@@ -106,20 +118,20 @@ class ControllerHandleBook {
                     ngaytra: borrow.ngaytra,
                     tinhtrang: borrow.tinhtrang,
                     giahan: borrow.giahan,
-                    quahan: quahan > 0 ? quahan : undefined // 🔹 Chỉ hiển thị nếu có quá hạn
+                    quahan: quahan > 0 ? quahan : undefined
                 };
             });
 
             return res.status(200).json({ message: 'Danh sách phiếu mượn', data: borrowList });
         } catch (error) {
             console.error("Lỗi khi lấy phiếu mượn theo sinh viên:", error);
-            return res.status(500).json({ message: 'Lỗi máy chủ !!!' });
+            return res.status(500).json({ message: 'Lỗi máy chủ, vui lòng thử lại sau!' });
         }
     }
 
     async GetBorrowById(req, res) {
         try {
-            const { maphieumuon } = req.body; 
+            const { maphieumuon } = req.body;
 
             if (!maphieumuon) {
                 return res.status(400).json({ message: 'Vui lòng nhập mã phiếu mượn !!!' });
@@ -303,25 +315,25 @@ class ControllerHandleBook {
     }
 
     async confirmBorrowRequest(req, res) {
-    try {
-        const { maphieumuon } = req.body;
+        try {
+            const { maphieumuon } = req.body;
 
-        const borrowRequest = await ModelHandleBook.findOneAndUpdate(
-            { maphieumuon: maphieumuon },
-            { confirm: true },
-            { new: true }
-        );
+            const borrowRequest = await ModelHandleBook.findOneAndUpdate(
+                { maphieumuon: maphieumuon },
+                { confirm: true },
+                { new: true }
+            );
 
-        if (!borrowRequest) {
-            return res.status(404).json({ message: 'Không tìm thấy yêu cầu mượn sách !!!' });
+            if (!borrowRequest) {
+                return res.status(404).json({ message: 'Không tìm thấy yêu cầu mượn sách !!!' });
+            }
+
+            return res.status(200).json({ message: 'Xác nhận thành công !!!', data: borrowRequest });
+        } catch (error) {
+            console.error(error);
+            return res.status(500).json({ message: 'Lỗi máy chủ !!!' });
         }
-
-        return res.status(200).json({ message: 'Xác nhận thành công !!!', data: borrowRequest });
-    } catch (error) {
-        console.error(error);
-        return res.status(500).json({ message: 'Lỗi máy chủ !!!' });
     }
-}
 
 
     async ExtendBorrowing(req, res) {
@@ -399,34 +411,34 @@ class ControllerHandleBook {
         }
     }
 
- async cancelUnconfirmedBorrows(req, res) {
-    try {
-        const fiveDaysAgo = moment().subtract(5, 'days').toDate();
+    async cancelUnconfirmedBorrows(req, res) {
+        try {
+            const fiveDaysAgo = moment().subtract(5, 'days').toDate();
 
-        // 📌 Tìm các yêu cầu mượn chưa được xác nhận quá 5 ngày
-        const expiredRequests = await ModelHandleBook.find({
-            confirm: false,
-            ngaymuon: { $lte: fiveDaysAgo },
-        });
+            // 📌 Tìm các yêu cầu mượn chưa được xác nhận quá 5 ngày
+            const expiredRequests = await ModelHandleBook.find({
+                confirm: false,
+                ngaymuon: { $lte: fiveDaysAgo },
+            });
 
-        for (const request of expiredRequests) {
-            // 📌 Cập nhật lại số lượng sách
-            await ModelBook.findOneAndUpdate(
-                { masach: request.masach },
-                { $inc: { soluongmuon: -request.soluong } }
-            );
+            for (const request of expiredRequests) {
+                // 📌 Cập nhật lại số lượng sách
+                await ModelBook.findOneAndUpdate(
+                    { masach: request.masach },
+                    { $inc: { soluongmuon: -request.soluong } }
+                );
 
-            // 📌 Xóa yêu cầu mượn sách
-            await ModelHandleBook.deleteOne({ _id: request._id });
+                // 📌 Xóa yêu cầu mượn sách
+                await ModelHandleBook.deleteOne({ _id: request._id });
 
-            console.log(`Đã hủy yêu cầu mượn sách có ID: ${request._id}`);
+                console.log(`Đã hủy yêu cầu mượn sách có ID: ${request._id}`);
+            }
+
+            return res.json({ success: true, message: 'Kiểm tra và hủy yêu cầu mượn sách thành công!' });
+        } catch (error) {
+            console.error('Lỗi khi kiểm tra yêu cầu mượn sách:', error);
+            return res.status(500).json({ success: false, message: 'Có lỗi xảy ra!' });
         }
-
-        return res.json({ success: true, message: 'Kiểm tra và hủy yêu cầu mượn sách thành công!' });
-    } catch (error) {
-        console.error('Lỗi khi kiểm tra yêu cầu mượn sách:', error);
-        return res.status(500).json({ success: false, message: 'Có lỗi xảy ra!' });
-    }
     }
     async GetBorrowedBooks(req, res) {
         try {

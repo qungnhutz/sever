@@ -8,7 +8,22 @@ const port = 5000;
 const bodyParser = require('body-parser');
 const ModelUser = require('./Model/ModelUser');
 app.use(cookieParser());
-app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
+const allowedOrigins = [
+    /*'http://localhost:3000',*/
+    'http://192.168.0.100:3000',
+];
+
+app.use(cors({
+    origin: function (origin, callback) {
+        // Cho phép nếu origin khớp hoặc không có origin (vd: từ Postman)
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true
+}));
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 route(app);
